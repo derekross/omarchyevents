@@ -1,0 +1,32 @@
+# venv / build
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# secrets — nsec must never be committed
+nsec
+*.nsec
+*.npub
+.env
+.env.*
+.envrc
+secrets/
+
+# state / runtime
+state.json
+*.log
+*.tmp
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
