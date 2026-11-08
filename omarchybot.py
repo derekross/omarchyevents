@@ -101,8 +101,8 @@ def fetch_calendar(period: str = "future") -> list[dict]:
             raise RuntimeError(f"unexpected calendar payload keys: {list(data)[:10]}")
         page = data["entries"]
         for e in page:
-            if "event" not in e or "api_id" not in e["event"]:
-                raise RuntimeError("unexpected entry shape: no event.api_id")
+            if not isinstance(e.get("event"), dict) or not entry_id(e):
+                raise RuntimeError("unexpected entry shape: no event.api_id or entry api_id")
         entries.extend(page)
         if not data.get("has_more"):
             break
@@ -110,6 +110,26 @@ def fetch_calendar(period: str = "future") -> list[dict]:
         if not cursor:
             break
     return entries
+
+
+def entry_id(entry: dict) -> Optional[str]:
+    """Luma-hosted events carry event.api_id (evt-...). Events added to the calendar from
+    elsewhere (platform "external", e.g. a meetup's own website) have no event.api_id;
+    their stable id is the calendar entry's api_id (calev-...)."""
+    return (entry.get("event") or {}).get("api_id") or entry.get("api_id")
+
+
+def is_external(entry: dict) -> bool:
+    return not (entry.get("event") or {}).get("api_id")
+
+
+def parse_duration(value: Optional[str]) -> Optional[dt.timedelta]:
+    """ISO 8601 durations as Luma writes them, e.g. P0Y0M0DT7H0M0S (years/months ignored)."""
+    m = re.fullmatch(r"P(?:\d+Y)?(?:\d+M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?", value or "")
+    if not m or not any(m.groups()):
+        return None
+    d, h, mi, se = (int(x or 0) for x in m.groups())
+    return dt.timedelta(days=d, hours=h, minutes=mi, seconds=se)
 
 
 def fetch_event_detail(api_id: str) -> dict:
@@ -322,16 +342,19 @@ class Meetup:
 
 def build_meetup(entry: dict, detail: Optional[dict]) -> Meetup:
     ev = entry["event"]
-    slug = ev.get("url") or ev["api_id"]
+    slug = ev.get("url") or entry_id(entry)
     url = slug if slug.startswith("http") else LUMA_EVENT_BASE + slug
     hosts = [h.get("name") for h in (detail or entry).get("hosts", []) or [] if h.get("name")]
     location, latlng, prec, geo = resolve_location(ev)
     desc = prosemirror_to_text((detail or {}).get("description_mirror"))
+    start = parse_iso(ev["start_at"])
     end = parse_iso(ev["end_at"]) if ev.get("end_at") else None
+    if end is None and parse_duration(ev.get("duration_interval")):
+        end = start + parse_duration(ev.get("duration_interval"))
     return Meetup(
-        api_id=ev["api_id"],
+        api_id=entry_id(entry),
         name=(ev.get("name") or "Omarchy Meetup").strip(),
-        start=parse_iso(ev["start_at"]),
+        start=start,
         end=end,
         tzid=ev.get("timezone") or "UTC",
         url=url,
@@ -519,9 +542,9 @@ def collect_meetups(*, limit: int = 0, details: bool = True) -> list[Meetup]:
         entries = entries[:limit]
     meetups: list[Meetup] = []
     for entry in entries:
-        api_id = entry["event"]["api_id"]
+        api_id = entry_id(entry)
         detail = None
-        if details:
+        if details and not is_external(entry):  # external events have no Luma detail page
             try:
                 detail = fetch_event_detail(api_id)
                 time.sleep(0.3)
